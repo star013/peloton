@@ -14,6 +14,7 @@
 #include "codegen/transaction_runtime.h"
 #include "common/container_tuple.h"
 #include "concurrency/transaction_manager_factory.h"
+#include "concurrency/lock_manager.h"
 #include "executor/executor_context.h"
 #include "storage/data_table.h"
 #include "storage/tile_group_header.h"
@@ -136,6 +137,19 @@ void Updater::Update() {
   auto tile_group = table_->GetTileGroupById(old_location_.block).get();
   auto *tile_group_header = tile_group->GetHeader();
   auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
+
+  oid_t table_oid = table_->GetOid();
+  // Lock the table (reader lock)
+  concurrency::LockManager *lm = concurrency::LockManager::GetInstance();
+  LOG_TRACE("Shared Lock in update: lock mamager address is %p, table oid is %u", (void *)lm, table_oid);
+  bool lock_success = lm->LockShared(table_oid);
+  if (!lock_success) {
+    LOG_TRACE("Cannot obtain lock for the table, abort!");
+  }
+  else {
+    txn->AddLockShared(table_oid);
+  }
+
   // Either update in-place
   if (is_owner_ == true) {
     txn_manager.PerformUpdate(txn, old_location_);

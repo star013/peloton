@@ -22,6 +22,9 @@
 #include "concurrency/transaction_context.h"
 #include "concurrency/epoch_manager_factory.h"
 #include "common/logger.h"
+#include "common/internal_types.h"
+#include "tbb/concurrent_unordered_set.h"
+#include "mutex"
 
 namespace peloton {
 
@@ -256,11 +259,31 @@ class TransactionManager {
     return isolation_level_;
   }
 
+  /**
+   * @brief      Check if the given transaction id set overlaps with
+   *             current transaction set.
+   *
+   * @return     True if set overlaps, false if not.
+   */
+  bool CheckConcurrentTxn(tbb::concurrent_unordered_set<txn_id_t>* set);
+
+  /**
+   * @brief      Access the current transaction set
+   *
+   * @return     Current transaction set
+   */
+  tbb::concurrent_unordered_set<txn_id_t> GetCurrentTxn(){
+    tbb::concurrent_unordered_set<txn_id_t> tmp = current_transactions_;
+    return tmp;
+  }
+
  protected:
   static ProtocolType protocol_;
   static IsolationLevelType isolation_level_;
   static ConflictAvoidanceType conflict_avoidance_;
+  tbb::concurrent_unordered_set<txn_id_t> current_transactions_;
+  std::mutex mtx_;
 
 };
-}  // namespace storage
+}  // namespace concurrency
 }  // namespace peloton

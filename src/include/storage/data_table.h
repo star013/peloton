@@ -180,6 +180,8 @@ class DataTable : public AbstractTable {
 
   std::shared_ptr<index::Index> GetIndex(const oid_t &index_offset);
 
+  std::shared_ptr<index::Index> GetIndexWithName(std::string name);
+
   std::set<oid_t> GetIndexAttrs(const oid_t &index_offset) const;
 
   oid_t GetIndexCount() const;
@@ -285,6 +287,11 @@ class DataTable : public AbstractTable {
   bool InsertInIndexes(const AbstractTuple *tuple, ItemPointer location,
                        concurrency::TransactionContext *transaction,
                        ItemPointer **index_entry_ptr);
+
+  // try to insert into one specific index.
+  bool InsertInIndex(const AbstractTuple *tuple, ItemPointer location,
+                       concurrency::TransactionContext *transaction,
+                       ItemPointer **index_entry_ptr, std::string index_name);
 
   inline static size_t GetActiveTileGroupCount() {
     return default_active_tilegroup_count_;

@@ -84,6 +84,8 @@ Catalog::Catalog() : pool_(new type::EphemeralPool()) {
 void Catalog::BootstrapSystemCatalogs(storage::Database *database,
                                       concurrency::TransactionContext *txn) {
   oid_t database_oid = database->GetOid();
+  LOG_TRACE("database_oid = %d", database_oid);
+  LOG_TRACE("database name = %s", database->GetDBName().c_str());
   catalog_map_.emplace(database_oid,
                        std::shared_ptr<SystemCatalogs>(
                            new SystemCatalogs(database, pool_.get(), txn)));
@@ -211,6 +213,7 @@ void Catalog::Bootstrap() {
 
 ResultType Catalog::CreateDatabase(const std::string &database_name,
                                    concurrency::TransactionContext *txn) {
+  LOG_TRACE("db name = %s", database_name.c_str());
   if (txn == nullptr)
     throw CatalogException("Do not have transaction to create database " +
                            database_name);
@@ -226,7 +229,7 @@ ResultType Catalog::CreateDatabase(const std::string &database_name,
   oid_t database_oid = pg_database->GetNextOid();
 
   storage::Database *database = new storage::Database(database_oid);
-
+  LOG_TRACE("get database");
   // TODO: This should be deprecated, dbname should only exists in pg_db
   database->setDBName(database_name);
   {
@@ -239,8 +242,48 @@ ResultType Catalog::CreateDatabase(const std::string &database_name,
   pg_database->InsertDatabase(database_oid, database_name, pool_.get(), txn);
 
   // add core & non-core system catalog tables into database
+  LOG_TRACE("begin bootstrap %s", database_name.c_str());
   BootstrapSystemCatalogs(database, txn);
+  LOG_TRACE("end bootstrap %s", database_name.c_str());
   catalog_map_[database_oid]->Bootstrap(database_name, txn);
+  LOG_TRACE("Database %s created. Returning RESULT_SUCCESS.",
+            database_name.c_str());
+  return ResultType::SUCCESS;
+}
+
+
+ResultType Catalog::CreateDatabaseWithoutIndex(const std::string &database_name,
+                                   concurrency::TransactionContext *txn) {
+  if (txn == nullptr)
+    throw CatalogException("Do not have transaction to create database " +
+                           database_name);
+
+  auto pg_database = DatabaseCatalog::GetInstance();
+  auto storage_manager = storage::StorageManager::GetInstance();
+  // Check if a database with the same name exists
+  auto database_object = pg_database->GetDatabaseObject(database_name, txn);
+  if (database_object != nullptr)
+    throw CatalogException("Database " + database_name + " already exists");
+
+  // Create actual database
+  oid_t database_oid = pg_database->GetNextOid();
+
+  storage::Database *database = new storage::Database(database_oid);
+  // TODO: This should be deprecated, dbname should only exists in pg_db
+  database->setDBName(database_name);
+  {
+    std::lock_guard<std::mutex> lock(catalog_mutex);
+    storage_manager->AddDatabaseToStorageManager(database);
+  }
+  // put database object into rw_object_set
+  txn->RecordCreate(database_oid, INVALID_OID, INVALID_OID);
+  // Insert database record into pg_db
+  pg_database->InsertDatabase(database_oid, database_name, pool_.get(), txn);
+
+  // add core & non-core system catalog tables into database
+  LOG_TRACE("begin bootstrap %s", database_name.c_str());
+  BootstrapSystemCatalogs(database, txn);
+  LOG_TRACE("end bootstrap %s", database_name.c_str());
   LOG_TRACE("Database %s created. Returning RESULT_SUCCESS.",
             database_name.c_str());
   return ResultType::SUCCESS;
@@ -466,7 +509,8 @@ ResultType Catalog::CreateIndex(const std::string &database_name,
                                 const std::vector<oid_t> &key_attrs,
                                 const std::string &index_name, bool unique_keys,
                                 IndexType index_type,
-                                concurrency::TransactionContext *txn) {
+                                concurrency::TransactionContext *txn,
+                                bool populate) {
   if (txn == nullptr)
     throw CatalogException("Do not have transaction to create database " +
                            index_name);
@@ -492,7 +536,7 @@ ResultType Catalog::CreateIndex(const std::string &database_name,
 
   ResultType success = CreateIndex(
       database_object->GetDatabaseOid(), table_object->GetTableOid(), key_attrs,
-      schema_name, index_name, index_type, index_constraint, unique_keys, txn);
+      schema_name, index_name, index_type, index_constraint, unique_keys, txn, populate);
 
   return success;
 }
@@ -501,7 +545,7 @@ ResultType Catalog::CreateIndex(
     oid_t database_oid, oid_t table_oid, const std::vector<oid_t> &key_attrs,
     const std::string &schema_name, const std::string &index_name,
     IndexType index_type, IndexConstraintType index_constraint,
-    bool unique_keys, concurrency::TransactionContext *txn, bool is_catalog) {
+    bool unique_keys, concurrency::TransactionContext *txn, bool is_catalog, bool populate) {
   if (txn == nullptr)
     throw CatalogException("Do not have transaction to create index " +
                            index_name);
@@ -514,7 +558,10 @@ ResultType Catalog::CreateIndex(
     auto database_object =
         DatabaseCatalog::GetInstance()->GetDatabaseObject(database_oid, txn);
     auto table_object = database_object->GetTableObject(table_oid);
-    auto index_object = table_object->GetIndexObject(index_name);
+
+    auto database_oid = database_object->GetDatabaseOid();
+    auto pg_index = catalog_map_[database_oid]->GetIndexCatalog();
+    auto index_object = pg_index->GetIndexObject(index_name, schema_name, txn);
 
     if (index_object != nullptr)
       throw CatalogException("Index " + index_name + " already exists in" +
@@ -541,6 +588,7 @@ ResultType Catalog::CreateIndex(
   // Add index to table
   std::shared_ptr<index::Index> key_index(
       index::IndexFactory::GetIndex(index_metadata));
+  key_index->SetPopulated(populate);
   table->AddIndex(key_index);
 
   // Put index object into rw_object_set
@@ -759,6 +807,47 @@ ResultType Catalog::DropIndex(oid_t database_oid, oid_t index_oid,
 
   // register index object in rw_object_set
   table->GetIndexWithOid(index_oid);
+  txn->RecordDrop(database_oid, index_object->GetTableOid(), index_oid);
+
+  return ResultType::SUCCESS;
+}
+
+/*@brief   Drop Index on table
+ * @param   index_name      the name of the index to be dropped
+ * @param   txn            TransactionContext
+ * @return  TransactionContext ResultType(SUCCESS or FAILURE)
+ */
+ResultType Catalog::DropIndex(std::string database_name, std::string index_name,
+                              std::string schema_name,
+                              concurrency::TransactionContext *txn) {
+  if (txn == nullptr)
+    throw CatalogException("Do not have transaction to drop index " +
+                           index_name);
+  // find index catalog object by looking up pg_index or read from cache using
+  // index_oid
+  auto database_object =
+      DatabaseCatalog::GetInstance()->GetDatabaseObject(database_name, txn);
+  if (database_object == nullptr)
+    throw CatalogException("Drop Index: database " + database_name +
+                           " does not exist");
+  auto database_oid = database_object->GetDatabaseOid();
+  auto pg_index = catalog_map_[database_oid]->GetIndexCatalog();
+  auto index_object = pg_index->GetIndexObject(index_name, schema_name, txn);
+  if (index_object == nullptr)
+    throw CatalogException("Can't find index " + index_name +
+                           " to drop");
+
+  auto index_oid = index_object->GetIndexOid();
+  auto storage_manager = storage::StorageManager::GetInstance();
+  auto table = storage_manager->GetTableWithOid(database_oid,
+                                                index_object->GetTableOid());
+  // drop record in pg_index
+  pg_index->DeleteIndex(index_oid, txn);
+  LOG_TRACE("Successfully drop index %d for table %s", index_oid,
+            table->GetName().c_str());
+
+  // register index object in rw_object_set
+  table->DropIndexWithOid(index_oid);
   txn->RecordDrop(database_oid, index_object->GetTableOid(), index_oid);
 
   return ResultType::SUCCESS;

@@ -89,6 +89,9 @@ class Catalog {
   ResultType CreateDatabase(const std::string &database_name,
                             concurrency::TransactionContext *txn);
 
+  ResultType CreateDatabaseWithoutIndex(const std::string &database_name,
+                                        concurrency::TransactionContext *txn);
+
   // Create a schema(namespace)
   ResultType CreateSchema(const std::string &database_name,
                           const std::string &schema_name,
@@ -108,7 +111,8 @@ class Catalog {
                          const std::vector<oid_t> &key_attrs,
                          const std::string &index_name, bool unique_keys,
                          IndexType index_type,
-                         concurrency::TransactionContext *txn);
+                         concurrency::TransactionContext *txn,
+                         bool populate = false);
 
   ResultType CreateIndex(oid_t database_oid, oid_t table_oid,
                          const std::vector<oid_t> &key_attrs,
@@ -116,7 +120,8 @@ class Catalog {
                          const std::string &index_name, IndexType index_type,
                          IndexConstraintType index_constraint, bool unique_keys,
                          concurrency::TransactionContext *txn,
-                         bool is_catalog = false);
+                         bool is_catalog = false,
+                         bool populate = false);
 
   //===--------------------------------------------------------------------===//
   // DROP FUNCTIONS
@@ -145,6 +150,10 @@ class Catalog {
   // Drop an index, using its index_oid
   ResultType DropIndex(oid_t database_oid, oid_t index_oid,
                        concurrency::TransactionContext *txn);
+  // Drop an index, using its name
+  ResultType DropIndex(std::string database_name, std::string index_name,
+                      std::string schema_name,
+                      concurrency::TransactionContext *txn);
   //===--------------------------------------------------------------------===//
   // GET WITH NAME - CHECK FROM CATALOG TABLES, USING TRANSACTION
   //===--------------------------------------------------------------------===//
