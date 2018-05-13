@@ -556,12 +556,12 @@ bool IndexScanExecutor::ExecSecondaryIndexLookup() {
           // chain.
           // Wire back because the current version is expired. have to search
           // from scratch.
-          tuple_location =
-              *(tile_group_header->GetIndirection(tuple_location.offset));
-          tile_group = manager.GetTileGroup(tuple_location.block);
-          tile_group_header = tile_group.get()->GetHeader();
-          chain_length = 0;
-          continue;
+          //tuple_location =
+          //    *(tile_group_header->GetIndirection(tuple_location.offset));
+          //tile_group = manager.GetTileGroup(tuple_location.block);
+          //tile_group_header = tile_group.get()->GetHeader();
+          //chain_length = 0;
+          break;
         }
 
         ItemPointer old_item = tuple_location;
